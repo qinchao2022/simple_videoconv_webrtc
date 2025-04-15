@@ -1,0 +1,331 @@
+<!DOCTYPE html>
+<html lang="zh">
+  <head>
+    <meta charset="UTF-8" />
+    <title>在线匹配聊天与视频通话</title>
+    <style>
+      body {
+        font-family: "Microsoft YaHei", sans-serif;
+        background-color: #f4f4f4;
+        display: flex;
+        justify-content: center;
+        align-items: center;
+        height: 100vh;
+        flex-direction: column;
+        margin: 0;
+      }
+
+      .container {
+        text-align: center;
+        background: #fff;
+        padding: 40px;
+        border-radius: 16px;
+        box-shadow: 0 0 20px rgba(0, 0, 0, 0.1);
+        width: 90%;
+        max-width: 500px;
+      }
+
+      #local-video,
+      #remote-video {
+        width: 320px;
+        height: 240px;
+        border: 3px solid #4caf50;
+        border-radius: 8px;
+        margin: 10px;
+        background-color: black;
+      }
+
+      #chat-box {
+        margin-top: 20px;
+      }
+
+      #messages {
+        border: 1px solid #ccc;
+        border-radius: 8px;
+        height: 200px;
+        overflow-y: auto;
+        padding: 10px;
+        background: #f9f9f9;
+        margin-bottom: 10px;
+        text-align: left;
+        font-size: 1rem;
+      }
+
+      input[type="text"] {
+        width: 70%;
+        padding: 10px;
+        border-radius: 8px;
+        border: 1px solid #ccc;
+        font-size: 1rem;
+      }
+
+      button {
+        padding: 10px 20px;
+        border-radius: 8px;
+        border: none;
+        background-color: #4caf50;
+        color: white;
+        cursor: pointer;
+        font-size: 1rem;
+        margin: 5px;
+      }
+
+      h2 {
+        font-size: 1.5rem;
+      }
+
+      @media (max-width: 600px) {
+        .container {
+          padding: 20px;
+        }
+
+        h2 {
+          font-size: 1.8rem;
+        }
+
+        #messages {
+          font-size: 1.2rem;
+        }
+
+        input[type="text"],
+        button {
+          font-size: 1.2rem;
+        }
+
+        #local-video,
+        #remote-video {
+          width: 100%;
+          height: auto;
+        }
+      }
+
+      .control-buttons {
+        margin-top: 10px;
+        display: flex;
+        justify-content: center;
+        gap: 10px;
+      }
+    </style>
+  </head>
+  <body>
+    <div class="container">
+      <h2>Socket 聊天与视频通话</h2>
+      <button onclick="match()">开始匹配</button>
+      <button onclick="logout()">退出</button>
+      <p id="status">请点击“开始匹配”</p>
+      <p>你的 ID: <span id="self-id">未知</span></p>
+      <p>对方 ID: <span id="partner-id">无</span></p>
+
+      <div id="chat-box" style="display: none">
+        <div id="messages"></div>
+        <input id="msg-input" placeholder="输入消息..." />
+        <button onclick="send()">发送</button>
+      </div>
+
+      <div id="video-container" style="display: none">
+        <video id="local-video" autoplay muted></video>
+        <video id="remote-video" autoplay></video>
+        <p id="video-status">连接中...</p>
+
+        <div class="control-buttons" id="media-controls" style="display: none">
+          <button id="toggle-video" onclick="toggleVideo()">关闭摄像头</button>
+          <button id="toggle-audio" onclick="toggleAudio()">关闭麦克风</button>
+        </div>
+      </div>
+    </div>
+
+    <script src="https://cdn.socket.io/4.5.4/socket.io.min.js"></script>
+    <script>
+      const socket = io();
+      let selfId, partnerId;
+      let localStream = null;
+      let peerConnection = null;
+      let videoEnabled = true;
+      let audioEnabled = true;
+
+      const iceServers = {
+        iceServers: [{ urls: "stun:stun.l.google.com:19302" }],
+      };
+
+      socket.on("connect", () => {
+        selfId = socket.id;
+        document.getElementById("self-id").innerText = selfId;
+      });
+
+      function match() {
+        socket.emit("match");
+        document.getElementById("status").innerText = "正在匹配中...";
+      }
+
+      function logout() {
+        socket.emit("logout");
+        document.getElementById("status").innerText = "已退出";
+        partnerId = null;
+        document.getElementById("partner-id").innerText = "无";
+        document.getElementById("chat-box").style.display = "none";
+        document.getElementById("video-container").style.display = "none";
+        document.getElementById("media-controls").style.display = "none";
+        document.getElementById("messages").innerHTML = "";
+      }
+
+      function send() {
+        const input = document.getElementById("msg-input");
+        const msg = input.value;
+        if (msg.trim()) {
+          socket.emit("send_message", { message: msg });
+          addMessage("我", msg);
+          input.value = "";
+        }
+      }
+
+      function addMessage(from, msg) {
+        const messages = document.getElementById("messages");
+        messages.innerHTML += `<div><b>${from}:</b> ${msg}</div>`;
+        messages.scrollTop = messages.scrollHeight;
+      }
+
+      socket.on("status", (msg) => {
+        document.getElementById("status").innerText = msg;
+      });
+
+      socket.on("matched", (data) => {
+        partnerId = data.partner_id;
+        document.getElementById("partner-id").innerText = partnerId;
+        document.getElementById("status").innerText = "匹配成功！";
+        document.getElementById("chat-box").style.display = "block";
+        document.getElementById("video-container").style.display = "block";
+        document.getElementById("media-controls").style.display = "flex";
+        startConnection();
+      });
+
+      socket.on("receive_message", (data) => {
+        if (data.from !== selfId) addMessage("对方", data.message);
+      });
+
+      socket.on("partner_left", () => {
+        document.getElementById("status").innerText = "对方已退出";
+        document.getElementById("partner-id").innerText = "无";
+        document.getElementById("chat-box").style.display = "none";
+        document.getElementById("video-container").style.display = "none";
+        document.getElementById("media-controls").style.display = "none";
+      });
+
+      function toggleVideo() {
+        if (!localStream) return;
+        videoEnabled = !videoEnabled;
+        localStream
+          .getVideoTracks()
+          .forEach((track) => (track.enabled = videoEnabled));
+        document.getElementById("toggle-video").innerText = videoEnabled
+          ? "关闭摄像头"
+          : "打开摄像头";
+      }
+
+      function toggleAudio() {
+        if (!localStream) return;
+        audioEnabled = !audioEnabled;
+        localStream
+          .getAudioTracks()
+          .forEach((track) => (track.enabled = audioEnabled));
+        document.getElementById("toggle-audio").innerText = audioEnabled
+          ? "关闭麦克风"
+          : "打开麦克风";
+      }
+
+      function startConnection() {
+        peerConnection = new RTCPeerConnection(iceServers);
+
+        peerConnection.ontrack = (event) => {
+          document.getElementById("remote-video").srcObject = event.streams[0];
+        };
+
+        peerConnection.onicecandidate = (event) => {
+          if (event.candidate && partnerId) {
+            socket.emit("ice_candidate", {
+              candidate: event.candidate,
+              partner_id: partnerId,
+            });
+          }
+        };
+
+        navigator.mediaDevices
+          .getUserMedia({ video: true, audio: true })
+          .then((stream) => {
+            localStream = stream;
+            document.getElementById("local-video").srcObject = stream;
+
+            stream
+              .getTracks()
+              .forEach((track) => peerConnection.addTrack(track, stream));
+
+            return peerConnection.createOffer();
+          })
+          .then((offer) => peerConnection.setLocalDescription(offer))
+          .then(() => {
+            socket.emit("video_offer", {
+              offer: peerConnection.localDescription,
+              partner_id: partnerId,
+            });
+          })
+          .catch((err) => {
+            console.warn("获取本地媒体流失败", err);
+          });
+      }
+
+      socket.on("video_offer", (data) => {
+        partnerId = data.partner_id;
+        peerConnection = new RTCPeerConnection(iceServers);
+
+        peerConnection.ontrack = (event) => {
+          document.getElementById("remote-video").srcObject = event.streams[0];
+        };
+
+        peerConnection.onicecandidate = (event) => {
+          if (event.candidate && partnerId) {
+            socket.emit("ice_candidate", {
+              candidate: event.candidate,
+              partner_id: partnerId,
+            });
+          }
+        };
+
+        peerConnection
+          .setRemoteDescription(new RTCSessionDescription(data.offer))
+          .then(() =>
+            navigator.mediaDevices.getUserMedia({ video: true, audio: true })
+          )
+          .then((stream) => {
+            localStream = stream;
+            document.getElementById("local-video").srcObject = stream;
+            stream
+              .getTracks()
+              .forEach((track) => peerConnection.addTrack(track, stream));
+          })
+          .catch((err) => {
+            console.warn("作为接收端加入，无本地流", err);
+          })
+          .finally(() => {
+            peerConnection
+              .createAnswer()
+              .then((answer) => peerConnection.setLocalDescription(answer))
+              .then(() => {
+                socket.emit("video_answer", {
+                  answer: peerConnection.localDescription,
+                  partner_id: partnerId,
+                });
+              });
+          });
+      });
+
+      socket.on("video_answer", (data) => {
+        peerConnection.setRemoteDescription(
+          new RTCSessionDescription(data.answer)
+        );
+      });
+
+      socket.on("ice_candidate", (data) => {
+        peerConnection.addIceCandidate(new RTCIceCandidate(data.candidate));
+      });
+    </script>
+  </body>
+</html>
